@@ -477,7 +477,7 @@ def main():
         combo_queue.put(combo)
 
     if stats['total_combos'] > 0:
-        print(f"{Fore.GREEN} [+] Starting checker with {stats['total_combos']} combos and up to {anasMax} workers..., Join us @XXXX_PRIVATE{Style.RESET_ALL}\n\n")
+        print(f"{Fore.GREEN} [+] Starting checker with {stats['total_combos']} combos and up to {anasMax} workers..., @AgentThani{Style.RESET_ALL}\n\n")
     else:
         print(f"{Fore.YELLOW} [!] No combos to check.{Style.RESET_ALL}")
         return
